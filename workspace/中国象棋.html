@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<title>中国象棋</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden;background:#1a1a2e}
+body{
+  display:flex;flex-direction:column;align-items:center;
+  font-family:'Noto Sans SC','Microsoft YaHei','PingFang SC',sans-serif;
+  touch-action:manipulation;user-select:none;-webkit-user-select:none;
+}
+/* 棋盘容器 */
+.board-box{
+  flex:1;display:flex;align-items:center;justify-content:center;
+  width:100%;padding:4px;min-height:0;
+}
+canvas#board{
+  display:block;border-radius:4px;cursor:pointer;
+  max-width:100%;max-height:100%;
+  width:auto;height:auto;
+}
+/* 底部控制栏 */
+.control-bar{
+  flex:none;width:100%;max-width:520px;
+  display:flex;flex-direction:column;gap:4px;
+  padding:4px 6px 10px;
+}
+.ctrl-row{
+  display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;
+}
+.info{
+  display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:center;
+}
+.turn-badge{
+  background:rgba(0,0,0,.4);color:#ffebc0;border-radius:16px;
+  padding:4px 12px;font-weight:bold;font-size:clamp(12px,4vw,16px);white-space:nowrap;
+}
+.status{
+  color:#d4c090;font-size:clamp(11px,3.5vw,14px);
+}
+.btns{
+  display:flex;align-items:center;gap:4px;flex-wrap:wrap;justify-content:center;
+}
+.btn{
+  border:none;border-radius:12px;font-weight:bold;cursor:pointer;font-family:inherit;
+  padding:6px 14px;font-size:clamp(13px,4.5vw,16px);transition:all .1s;
+  color:#fff;line-height:1.2;
+}
+.btn:active{filter:brightness(.85);transform:scale(.96)}
+.btn-new{background:#e74c3c}
+.btn-undo{background:#f39c12}
+.btn-pass{background:#3498db}
+.diff-group{display:flex;gap:3px}
+.diff-btn{
+  border:2px solid rgba(255,255,255,.3);border-radius:10px;
+  background:transparent;color:#b8a878;font-weight:bold;cursor:pointer;font-family:inherit;
+  padding:4px 10px;font-size:clamp(11px,3.8vw,14px);transition:all .1s;
+}
+.diff-btn:active{background:rgba(255,255,200,.1)}
+.diff-btn.on{border-color:#ffd700;color:#ffd700;background:rgba(255,215,0,.15)}
+.toast{
+  position:fixed;top:12%;left:50%;transform:translateX(-50%);
+  background:rgba(0,0,0,.85);color:#fff;padding:10px 24px;border-radius:10px;
+  font-size:clamp(14px,4.5vw,18px);z-index:999;opacity:0;transition:opacity .3s;
+  pointer-events:none;text-align:center;backdrop-filter:blur(8px);
+  border:1px solid rgba(255,255,255,.08);max-width:88vw;line-height:1.5;
+}
+.toast.on{opacity:1}
+</style>
+</head>
+<body>
+
+<div class="toast" id="toast"></div>
+
+<div class="board-box" id="boardBox">
+  <canvas id="board"></canvas>
+</div>
+
+<div class="control-bar">
+  <div class="ctrl-row">
+    <div class="info">
+      <span class="turn-badge" id="turnBadge">🔴 红方</span>
+      <span class="status" id="statusText">点击棋子</span>
+    </div>
+  </div>
+  <div class="ctrl-row">
+    <div class="btns">
+      <div class="diff-group">
+        <button class="diff-btn" data-d="2">简单</button>
+        <button class="diff-btn on" data-d="4">中等</button>
+        <button class="diff-btn" data-d="6">困难</button>
+      </div>
+      <button class="btn btn-pass" id="passBtn">⏭ AI走</button>
+      <button class="btn btn-undo" id="undoBtn">↩ 悔棋</button>
+      <button class="btn btn-new" id="newBtn">新局</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===================================================================
+// 引擎
+// ===================================================================
+const GEN=0,ADVISOR=1,ELEPHANT=2,HORSE=3,CHARIOT=4,CANNON=5,SOLDIER=6;
+const NB=['将','士','象','马','车','炮','卒'];
+const NR=['帅','仕','相','馬','車','砲','兵'];
+const RED=0,BLACK=1;
+function opp(c){return c^1}
+
+class Board{
+  constructor(){this.reset()}
+  reset(){
+    this.b=Array.from({length:10},()=>Array(9).fill(null));
+    this.turn=RED;this.history=[];
+    const RR=[{t:CHARIOT},{t:HORSE},{t:ELEPHANT},{t:ADVISOR},{t:GEN},{t:ADVISOR},{t:ELEPHANT},{t:HORSE},{t:CHARIOT}];
+    for(let x=9;x--;)this.b[9][x]={...RR[x],c:RED};
+    const BB=[{t:CHARIOT},{t:HORSE},{t:ELEPHANT},{t:ADVISOR},{t:GEN},{t:ADVISOR},{t:ELEPHANT},{t:HORSE},{t:CHARIOT}];
+    for(let x=9;x--;)this.b[0][x]={...BB[x],c:BLACK};
+    this.b[7][1]=this.b[7][7]={t:CANNON,c:RED};
+    this.b[2][1]=this.b[2][7]={t:CANNON,c:BLACK};
+    for(let x of[0,2,4,6,8]){this.b[6][x]={t:SOLDIER,c:RED};this.b[3][x]={t:SOLDIER,c:BLACK}}
+  }
+  genRaw(x,y){
+    const p=this.b[y][x];if(!p)return[];
+    const{t,c:color}=p,moves=[];
+    const ok=(tx,ty)=>{
+      if(tx<0||tx>8||ty<0||ty>9)return;
+      if(this.b[ty][tx]&&this.b[ty][tx].c===color)return;
+      moves.push({fx:x,fy:y,tx,ty});
+    };
+    switch(t){
+      case GEN:
+        for(const[dx,dy] of[[0,1],[0,-1],[1,0],[-1,0]]){
+          const nx=x+dx,ny=y+dy;
+          if(ny<=(color?2:9)&&ny>=(color?0:7)&&nx>=3&&nx<=5)ok(nx,ny)
+        }
+        const og=this.findGen(opp(color));
+        if(og&&og.x===x){
+          let blocked=0;
+          for(let yy=Math.min(y,og.y)+1;yy<Math.max(y,og.y);yy++){if(this.b[yy][x]){blocked=1;break}}
+          if(!blocked)ok(og.x,og.y)
+        }
+        break;
+      case ADVISOR:
+        for(const[dx,dy] of[[1,1],[1,-1],[-1,1],[-1,-1]]){
+          const nx=x+dx,ny=y+dy;
+          if(ny<=(color?2:9)&&ny>=(color?0:7)&&nx>=3&&nx<=5)ok(nx,ny)
+        }
+        break;
+      case ELEPHANT:
+        for(const[dx,dy,ex,ey] of[[2,2,1,1],[2,-2,1,-1],[-2,2,-1,1],[-2,-2,-1,-1]]){
+          const nx=x+dx,ny=y+dy,bx=x+ex,by=y+ey;
+          if(nx<0||nx>8||ny<0||ny>9)continue;
+          if(color===RED&&ny<5)continue;if(color===BLACK&&ny>4)continue;
+          if(this.b[by][bx])continue;ok(nx,ny)
+        }
+        break;
+      case HORSE:
+        for(const[dx,dy,bx,by] of[[1,2,0,1],[1,-2,0,-1],[-1,2,0,1],[-1,-2,0,-1],[2,1,1,0],[2,-1,1,0],[-2,1,-1,0],[-2,-1,-1,0]]){
+          const nx=x+dx,ny=y+dy,ex=x+bx,ey=y+by;
+          if(nx<0||nx>8||ny<0||ny>9)continue;
+          if(this.b[ey][ex])continue;ok(nx,ny)
+        }
+        break;
+      case CHARIOT:
+        for(const[dx,dy] of[[0,1],[0,-1],[1,0],[-1,0]]){
+          let nx=x+dx,ny=y+dy;
+          while(nx>=0&&nx<=8&&ny>=0&&ny<=9){
+            const d=this.b[ny][nx];
+            if(!d)ok(nx,ny);else{if(d.c!==color)ok(nx,ny);break}
+            nx+=dx;ny+=dy;
+          }
+        }
+        break;
+      case CANNON:
+        for(const[dx,dy] of[[0,1],[0,-1],[1,0],[-1,0]]){
+          let nx=x+dx,ny=y+dy,screen=0;
+          while(nx>=0&&nx<=8&&ny>=0&&ny<=9){
+            const d=this.b[ny][nx];
+            if(!screen){if(!d)ok(nx,ny);else screen=1}
+            else{if(d){if(d.c!==color)ok(nx,ny);break}}
+            nx+=dx;ny+=dy;
+          }
+        }
+        break;
+      case SOLDIER:
+        if(color===RED){ok(x,y-1);if(y<=4){ok(x-1,y);ok(x+1,y)}}
+        else{ok(x,y+1);if(y>=5){ok(x-1,y);ok(x+1,y)}}
+        break;
+    }
+    return moves;
+  }
+  allLegal(color){
+    const r=[];
+    for(let y=10;y--;)for(let x=9;x--;){
+      const p=this.b[y][x];if(!p||p.c!==color)continue;
+      for(const m of this.genRaw(x,y))if(this.isLegal(m))r.push(m);
+    }
+    return r;
+  }
+  isLegal(m){
+    const cp=this.b[m.ty][m.tx];
+    this.b[m.ty][m.tx]=this.b[m.fy][m.fx];this.b[m.fy][m.fx]=null;
+    const ok=!this.inCheck(this.turn);
+    this.b[m.fy][m.fx]=this.b[m.ty][m.tx];this.b[m.ty][m.tx]=cp;
+    return ok;
+  }
+  doMove(m){
+    const cp=this.b[m.ty][m.tx];
+    this.b[m.ty][m.tx]=this.b[m.fy][m.fx];this.b[m.fy][m.fx]=null;
+    this.history.push({move:m,captured:cp});this.turn=opp(this.turn);
+    return cp;
+  }
+  undo(){
+    const e=this.history.pop();if(!e)return null;
+    const{move:m,captured:c}=e;
+    this.b[m.fy][m.fx]=this.b[m.ty][m.tx];this.b[m.ty][m.tx]=c;
+    this.turn=opp(this.turn);return e;
+  }
+  findGen(color){
+    for(let y=10;y--;)for(let x=9;x--;){
+      const p=this.b[y][x];if(p&&p.t===GEN&&p.c===color)return{x,y};
+    }
+    return null;
+  }
+  inCheck(color){
+    const g=this.findGen(color);if(!g)return 1;
+    const oc=opp(color);
+    for(let y=10;y--;)for(let x=9;x--;){
+      const p=this.b[y][x];if(!p||p.c!==oc)continue;
+      for(const m of this.genRaw(x,y))if(m.tx===g.x&&m.ty===g.y)return 1;
+    }
+    return 0;
+  }
+  isMated(color){return this.allLegal(color).length===0}
+}
+const PV=[10000,300,300,500,1000,500,100];
+Board.prototype.evaluate=function(){
+  let s=0;
+  for(let y=10;y--;)for(let x=9;x--;){
+    const p=this.b[y][x];if(!p)continue;
+    const v=PV[p.t];s+=p.c===RED?v:-v;
+    // 位置奖励：兵过河 马中心 车要道
+    if(p.t===SOLDIER){if(p.c===RED&&y<=4)s+=8*(5-y);else if(p.c===BLACK&&y>=5)s+=8*(y-4)}
+    if(p.t===HORSE)s+=p.c===RED?(4-Math.abs(x-4))*4:(4-Math.abs(x-4))*4;
+    if(p.t===CHARIOT&&x>=1&&x<=7)s+=p.c===RED?6:-6;
+  }
+  return s;
+};
+
+// ========== AI 搜索 ==========
+function searchBest(board,depth){
+  function ab(d,a,b,isMax){
+    if(d===0)return board.evaluate();
+    const ms=board.allLegal(board.turn);
+    if(ms.length===0)return isMax?-99999:99999;
+    ms.sort((x,y)=>{
+      const px=board.b[x.ty][x.tx],py=board.b[y.ty][y.tx];
+      return(py?PV[py.t]:0)-(px?PV[px.t]:0);
+    });
+    if(isMax){let best=-1e9;for(const m of ms){board.doMove(m);const v=ab(d-1,a,b,0);board.undo();if(v>best)best=v;if(v>a)a=v;if(a>=b)break}return best}
+    else{let best=1e9;for(const m of ms){board.doMove(m);const v=ab(d-1,a,b,1);board.undo();if(v<best)best=v;if(v<b)b=v;if(b<=a)break}return best}
+  }
+  const ms=board.allLegal(board.turn);
+  if(!ms.length)return null;
+  ms.sort((x,y)=>{
+    const px=board.b[x.ty][x.tx],py=board.b[y.ty][y.tx];
+    return(py?PV[py.t]:0)-(px?PV[px.t]:0);
+  });
+  let best=ms[0],bestVal,a=-1e9,b=1e9,isMax=board.turn===RED;
+  if(isMax){bestVal=-1e9;for(const m of ms){board.doMove(m);const v=ab(depth-1,a,b,0);board.undo();if(v>bestVal){bestVal=v;best=m}if(v>a)a=v;if(a>=b)break}}
+  else{bestVal=1e9;for(const m of ms){board.doMove(m);const v=ab(depth-1,a,b,1);board.undo();if(v<bestVal){bestVal=v;best=m}if(v<b)b=v;if(b<=a)break}}
+  return best;
+}
+
+// ===================================================================
+// 渲染
+// ===================================================================
+const canvas=document.getElementById('board');
+const ctx=canvas.getContext('2d');
+const box=document.getElementById('boardBox');
+const badge=document.getElementById('turnBadge');
+const stxt=document.getElementById('statusText');
+const toast=document.getElementById('toast');
+const LOGICAL=520; // 逻辑分辨率
+
+canvas.width=LOGICAL;canvas.height=Math.round(LOGICAL*9/8);
+
+function cellSize(){
+  // 用逻辑坐标固定绘制，CSS max-width 缩放
+  // 返回逻辑棋盘参数
+  const W=LOGICAL;
+  const cw=W/10,H=W*9/8;
+  const CELL=Math.floor(W/10),OFF=Math.floor((W-CELL*8)/2);
+  return{CELL,OFF,W,H};
+}
+function toPixel(c,r){const p=cellSize();if(flipped){c=8-c;r=9-r}return{x:p.OFF+c*p.CELL,y:p.OFF+r*p.CELL}}
+
+// 点击坐标转换：屏幕坐标 → 逻辑坐标 → 棋盘坐标
+function logicalXY(e){
+  const r=canvas.getBoundingClientRect();
+  const t=e.touches?e.touches[0]:e;
+  const lx=(t.clientX-r.left)/r.width*canvas.width;
+  const ly=(t.clientY-r.top)/r.height*canvas.height;
+  return{x:lx,y:ly};
+}
+function toBoard(lx,ly){
+  const p=cellSize();
+  let dc=Math.round((lx-p.OFF)/p.CELL),dr=Math.round((ly-p.OFF)/p.CELL);
+  if(dc<0||dc>8||dr<0||dr>9)return null;
+  // 显示坐标 → 逻辑坐标
+  let lc=dc,lr=dr;
+  if(flipped){lc=8-dc;lr=9-dr}
+  const cp=toPixel(lc,lr);
+  if(Math.hypot(lx-cp.x,ly-cp.y)>p.CELL*0.48)return null;
+  return{x:lc,y:lr};
+}
+
+// ----- 绘画 -----
+function draw(){
+  const p=cellSize(),C=p.CELL,O=p.OFF,W=p.W,H=p.H;
+  ctx.clearRect(0,0,W,H);
+  const g=ctx.createLinearGradient(0,0,W,H);
+  g.addColorStop(0,'#f0c878');g.addColorStop(.5,'#e8bc60');g.addColorStop(1,'#daa850');
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle='#4a3520';ctx.lineWidth=Math.max(1,C/25);
+  ctx.strokeRect(O-2,O-2,C*8+4,C*9+4);
+  const lw=Math.max(.8,C/42);
+  ctx.lineWidth=lw;
+
+  for(let r=10;r--;){const a=toPixel(0,r),b=toPixel(8,r);ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke()}
+  for(let c=9;c--;){
+    if(c===0||c===8){const a=toPixel(c,0),b=toPixel(c,9);ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke()}
+    else{const a=toPixel(c,0),b=toPixel(c,4),c2=toPixel(c,5),d=toPixel(c,9);ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();ctx.beginPath();ctx.moveTo(c2.x,c2.y);ctx.lineTo(d.x,d.y);ctx.stroke()}
+  }
+  for(const[x1,y1,x2,y2] of[[3,0,5,2],[3,2,5,0],[3,7,5,9],[3,9,5,7]]){const a=toPixel(x1,y1),b=toPixel(x2,y2);ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke()}
+
+  ctx.fillStyle='#6b5030';ctx.font='bold '+Math.round(C*.33)+'px "KaiTi","STKaiti",serif';
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  const ry=toPixel(0,4.5).y;ctx.fillText('楚  河',O+C*2,ry);ctx.fillText('漢  界',O+C*6,ry);
+
+  ctx.lineWidth=Math.max(.7,C/50);
+  // 正规十字花（星位）：兵行线 炮位 边角
+  // 炮位(宫顶线): 仅第1,7列
+  for(const c of[1,7]){drawStar(C,O,c,2);drawStar(C,O,c,7)}
+  // 兵行线: 5个兵位
+  for(const c of[0,2,4,6,8]){drawStar(C,O,c,3);drawStar(C,O,c,6)}
+  // 仅兵线、炮位有十字花，其它地方没有
+
+  // 选中
+  if(sel){
+    const q=toPixel(sel.x,sel.y);
+    ctx.fillStyle='rgba(255,215,0,.35)';ctx.fillRect(q.x-C/2,q.y-C/2,C,C);
+    ctx.strokeStyle='rgba(255,215,0,.7)';ctx.lineWidth=Math.max(1.5,C/18);
+    ctx.strokeRect(q.x-C/2,q.y-C/2,C,C);
+  }
+  for(const m of valid){
+    const q=toPixel(m.tx,m.ty);
+    if(board.b[m.ty][m.tx]){ctx.strokeStyle='rgba(255,60,60,.55)';ctx.lineWidth=Math.max(1.5,C/18);ctx.beginPath();ctx.arc(q.x,q.y,C*.41,0,6.29);ctx.stroke()}
+    else{ctx.fillStyle='rgba(0,220,80,.3)';ctx.beginPath();ctx.arc(q.x,q.y,Math.max(4,C*.11),0,6.29);ctx.fill()}
+  }
+  if(board.history.length){
+    const lm=board.history[board.history.length-1].move;
+    for(const[lx,ly] of[[lm.fx,lm.fy],[lm.tx,lm.ty]]){const q=toPixel(lx,ly);ctx.fillStyle='rgba(80,180,255,.15)';ctx.fillRect(q.x-C/2,q.y-C/2,C,C)}
+  }
+
+  // 棋子
+  const fs=Math.round(C*.36);
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  for(let y=10;y--;)for(let x=9;x--;){
+    const p=board.b[y][x];if(!p)continue;
+    const q=toPixel(x,y),isRed=p.c===RED;
+    ctx.fillStyle='rgba(0,0,0,.12)';ctx.beginPath();ctx.arc(q.x+1,q.y+2,C*.42,0,6.29);ctx.fill();
+    const gg=ctx.createRadialGradient(q.x-C*.08,q.y-C*.08,C*.04,q.x,q.y,C*.43);
+    if(isRed){gg.addColorStop(0,'#ffe8d8');gg.addColorStop(.6,'#f0c8a8');gg.addColorStop(1,'#c89070')}
+    else{gg.addColorStop(0,'#e8f0e8');gg.addColorStop(.6,'#c8d0c8');gg.addColorStop(1,'#90a090')}
+    ctx.fillStyle=gg;ctx.beginPath();ctx.arc(q.x,q.y,C*.42,0,6.29);ctx.fill();
+    ctx.strokeStyle=isRed?'#b04030':'#304050';ctx.lineWidth=Math.max(1,C/28);
+    ctx.beginPath();ctx.arc(q.x,q.y,C*.42,0,6.29);ctx.stroke();
+    if(p.t===GEN||p.t===ADVISOR){ctx.strokeStyle=isRed?'#b04030':'#304050';ctx.lineWidth=Math.max(.7,C/45);ctx.beginPath();ctx.arc(q.x,q.y,C*.27,0,6.29);ctx.stroke()}
+    ctx.fillStyle=isRed?'#c02010':'#182838';
+    ctx.font='bold '+fs+'px "KaiTi","STKaiti","Noto Sans SC",serif';
+    ctx.fillText(isRed?NR[p.t]:NB[p.t],q.x,q.y+1);
+  }
+}
+function drawStar(C,O,x,y){
+  // 十字花：在每个星位画4个L形角花，开口朝向交叉点
+  const p=toPixel(x,y);
+  // 臂长加大让手机上清晰可见
+  const hl=Math.max(7,C*0.18);  // 水平臂长
+  const vl=Math.max(7,C*0.18);  // 垂直臂长
+  const gap=Math.max(2,C*0.04); // 距交叉点的间隙
+  const off=Math.max(3,C*0.05); // 距单元格边
+  ctx.strokeStyle='#3a2510';ctx.lineWidth=Math.max(1.5,C/28);
+  const lines=[];
+  // 左 x>0: 水平线从左向右（上下各一条）
+  if(x>0){lines.push([p.x-C/2+off,p.y-gap,p.x-C/2+off+hl,p.y-gap],[p.x-C/2+off,p.y+gap,p.x-C/2+off+hl,p.y+gap])}
+  // 右 x<8: 水平线从右向左
+  if(x<8){lines.push([p.x+C/2-off,p.y-gap,p.x+C/2-off-hl,p.y-gap],[p.x+C/2-off,p.y+gap,p.x+C/2-off-hl,p.y+gap])}
+  // 上 y>0: 竖线从上向下
+  if(y>0){lines.push([p.x-gap,p.y-C/2+off,p.x-gap,p.y-C/2+off+vl],[p.x+gap,p.y-C/2+off,p.x+gap,p.y-C/2+off+vl])}
+  // 下 y<9: 竖线从下向上
+  if(y<9){lines.push([p.x-gap,p.y+C/2-off,p.x-gap,p.y+C/2-off-vl],[p.x+gap,p.y+C/2-off,p.x+gap,p.y+C/2-off-vl])}
+  for(const[sx,sy,ex,ey] of lines){ctx.beginPath();ctx.moveTo(sx,sy);ctx.lineTo(ex,ey);ctx.stroke()}
+}
+
+// ========== 游戏 ==========
+let board=new Board(),sel=null,valid=[],gameOver=0,aiBusy=0,aiDepth=4,flipped=0;
+
+function showToast(t,d){toast.textContent=t;toast.classList.add('on');clearTimeout(toast._t);toast._t=setTimeout(()=>toast.classList.remove('on'),d||2200)}
+function ui(){
+  if(gameOver){badge.textContent='🏆 '+(board.turn===RED?'黑方':'红方')+'胜利！';stxt.textContent='新局';return}
+  if(aiBusy){badge.textContent='🤔 AI思考中';stxt.textContent='请稍候…';return}
+  // 考虑翻转: 玩家应看到自己的颜色
+  const pColor=flipped?board.turn:board.turn; // 显示的走棋方 = 实际走棋方
+  badge.textContent=board.turn===RED?'🔴 红方走棋':'⚫ 黑方走棋';
+  stxt.textContent=sel?'点击目标':'点击棋子'
+}
+function selPiece(x,y){
+  sel={x,y};valid=[];
+  for(const m of board.genRaw(x,y))if(board.isLegal(m))valid.push(m);
+  draw();ui()
+}
+function onInput(px,py){
+  if(gameOver||aiBusy)return;
+  const pos=toBoard(px,py);if(!pos)return;
+  const c=board.b[pos.y][pos.x];
+  if(sel){
+    const mv=valid.find(m=>m.tx===pos.x&&m.ty===pos.y);
+    if(mv){var cp=board.doMove(mv);sfx(cp);sel=null;valid=[];draw();ui();checkState();return}
+    if(c&&c.c===board.turn){selPiece(pos.x,pos.y);return}
+    sel=null;valid=[];draw();ui();return
+  }
+  if(c&&c.c===board.turn)selPiece(pos.x,pos.y)
+}
+function checkState(){
+  if(gameOver)return;
+  if(board.isMated(board.turn)){gameOver=1;draw();ui();showToast('🏆 '+(board.turn===RED?'黑方':'红方')+'将杀！',3500);return}
+  if(board.inCheck(board.turn))showToast('⚠️ 将军！');
+  // AI颜色: 翻转时AI执红, 否则执黑
+  const aiColor=flipped?RED:BLACK;
+  if(!gameOver&&board.turn===aiColor)runAI()
+}
+function runAI(){aiBusy=1;ui();setTimeout(()=>{
+  const m=searchBest(board,aiDepth);
+  if(m&&!gameOver){var cp=board.doMove(m);sfx(cp);sel=null;valid=[];draw();aiBusy=0;ui();checkState()}
+  else{aiBusy=0;ui()}
+},10)}
+function newGame(){board=new Board();sel=null;valid=[];gameOver=0;aiBusy=0;flipped=0;draw();ui();showToast('红方先行')}
+function undoMove(){
+  if(gameOver||aiBusy||!board.history.length)return;
+  board.undo();if(board.history.length>0)board.undo();sel=null;valid=[];gameOver=0;draw();ui()
+}
+function passTurn(){
+  // 翻转棋盘: 玩家改执黑方, AI执红方
+  if(gameOver||aiBusy)return;
+  flipped=1;sel=null;valid=[];draw();ui();
+  showToast('AI执红先行 · 您执黑');
+  // AI走第一步（红方）
+  aiBusy=1;ui();setTimeout(()=>{
+    const m=searchBest(board,aiDepth);
+    if(m&&!gameOver){var cp=board.doMove(m);sfx(cp);draw()}
+    aiBusy=0;ui();if(!gameOver&&board.inCheck(board.turn))showToast('⚠️ 将军！')
+  },10)
+}
+
+// ========== 事件 ==========
+const handler=e=>{e.preventDefault();const p=logicalXY(e);onInput(p.x,p.y)};
+canvas.addEventListener('click',handler);
+canvas.addEventListener('touchstart',handler,{passive:false});
+
+document.getElementById('newBtn').addEventListener('click',newGame);
+document.getElementById('undoBtn').addEventListener('click',undoMove);
+document.getElementById('passBtn').addEventListener('click',passTurn);
+document.querySelectorAll('.diff-btn').forEach(b=>{
+  b.addEventListener('click',()=>{
+    document.querySelectorAll('.diff-btn').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');aiDepth=parseInt(b.dataset.d);showToast('难度: '+b.textContent)
+  });
+});
+
+
+// 音效
+var _c=new Audio('data:audio/wav;base64,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CgAKAAoACgARAAQABgAPABUAHAAGAAAA/P/6//X/9f/x//X/AAAPAB4AKQAlACkALgAlABUAEQARAA8AGAAlACUADwAKAAoADwAGAAQACgAPAB4AIwAcABwAHAAlADAANwA7ACUAEQAAAAAAAAAAAAQAEQARAA0ABgAAAAAA/P8AAPz/6v/d/9T/1//i/+///P8GAA0AEQAYABwAFQANAAAA+v/6//z/AADz/+r/9f/8//z/AAARAA0AEQATAA0ABgAGAAQAAAAEAAYAEwAjACUAIwAYAAYAAAAAAAAAAAD6//P/6P/t/+//9f/1//r/8//o/+j/6P/m/+j/5v/o/wAAAADo/9D/1P/X/+b/7f/z/+//6P/o/+L/3//o//r/BAANAAYAAAD6/wAADQAKAAAA9f/v/+j/3//b/9L/w//A/8D/x//O/9L/0v/S/87/w//O/8f/x//F/8X/vv++/9n/7f/1//P/7//t/+//8//z/+3/5v/v/+//8//6/wAADQAeABoAGgAEAAQABgAEAAQABAANABgAHgATAAYAAAD1/+3/7f/v//P//P8AAAAAEQAeAB4ALgAuACcAJQAaABoAHgARAAoACgANABEAGgAgABMAEQARABgAHgAYABEABgAAAAAAAAAAAAAAAAAEAAAA+v/6//r//P8EAAYAAAD8/wAABAAEAAAA8//m/+j/7f/1//r/9f/6//r/9f/v/+//7f/i/9n/2f/Z/9v/3//m/+3/5v/i/9v/1//f/+j/4v/d/9n/3//t//X/AAAAAAAAAAAEAAoACgAKAAoADQAKAAYADQAGAAAAAAAAAAAAAAAAAAQAAAD6/wAACgAGAAAA+v/v/+r/5v/z//X//P/1/+//AAAGAA0ADQAEAAAA7f/m/+r/9f8AAPz/+v8AAAYAEQAVABMAIAAnADAAPQA0ACcAIAAVABEACgANAA0ABgAEAAQAAAD6//z/+v8AAAYABAD8//z/AAAAAPz/+v/1//P/8//6//r/+v/8//X/+v/6/wAABAAGAAQABgAPAA8AEwAVACAAIAAgACcAMAA3ACkAHAAVABoAIAAnABUABAAAAAQABAAAAAAA/P/8//X/+v/z//z/+v/z//P/8//z/+r/7f/z//P/8f/m/9//6v/x//H/9f/1//z/BAAGAAAAAAAAAAAAAAAGAAYABgAKAA0ABgAAAPr/+P/6//z/AAAGAAYAAADz//H/8f/x//r/+v/6//P/+v8AAPz/6v/m//H/+v/4//H/7f/z//r//P8AAPz//P8AAAAABAANAA0ACAANABMAGgAcACMAJQAsAC4AJQAcABoAIwAlABwAEwAcACMAKQAsACwAKQAYAAgABgAAAAAAAAAEAAYABAAIAA8ABAAAAA8ADwAAAAAAAAAAAAQABAAEAAAA+P/6//j//P8AAAAA/P/z//r//P8AAPz//P/8/wAA/P/4//j/+v/4//P/8//t/+3/8f/k/+L/2//b/93/2f/U/9L/1P/b/+L/4v/k/+L/4v/f/+j/8f/k/9n/2f/U/9n/0v/Z/+3/+P/8//z//P/6//r//P8AAAQAEQAcABUADwAVAB4AHAAeAB4AHAAcAB4AGAAcAA8ABAAGAAYACAANAAQAAAAAAAAA+v/6//P/8f/6//r/+P/x/+T/2f/S/9n/0v/X/9f/yf/L/9L/2f/Q/9L/2f/Z/9v/1//b/+j/6v/q//j/+v8AAAAA+v/z//j/AAAGAAQACAAPAAgADQANAA8ABgAAAPj/8//z//P/+v/8//P/8f/4//P/8//v/+//5v/o//P/8f/x/+//6v/q/+j/7//z//H/+P/8//z/+v/4//j/+P/4//z/CAARAA8AEQAPAAgABgANABUAEQAGAAQACAAEAAYABgAEAPz//P/4//r/AAAAAAAAAAAAAPP/7//v//H/6P/d/+b/7//o/+b/6P/v//j/+P/6//z//P8AAAAAAAAAAPr/+P/6//z/AAAAAPr/8//6//z/+v/z//P/+P8AAAQACAAIABEAGAAVABEADQANAAAA+v/6/wAABAAEAAYADQAGAAAAAAAAAAAAAAAAAPH/9f8AAAAABgAGAAIAAAACAAIACAAGAAgACgACAAIACgATAA8ACgATACMALgAsACwAJQAuAC4AJQAjACAAGAAPAA8ADwAPAAoACAAGAAAAAAD4//H/7//x//r/+P/+/wAAAAACAAIAAgD+//j/+P/+/wAAAAD+//H/9f/6//7/AAAAAAIACAAPAA8ACgAIAAoADwAPABEACgAAAAIACgAKAAIAAAD+//r//v8AAAAABgACAAgAEQAIAAIAAAAAAAAAAAAAAAIABgACAAgAEQATABEAEQAPAA8AEQAYABgAGAAaABwAEwAKAAgABgAGAAoACgACAAAA/v/+//7/+P/1//H/8f/v//r/AAD+//H/7//v/+//7//v/+3/5P/Z/9n/3f/m/+r/6v/q/+//8f/x//r/+v/1/+3/7//1/wAA+v/x//X/8f/v//j/AAAAAAgADwAIAAIAAAAAAAAA+P/4/wIACgATABUAEwAaABUAEQAKAAAAAAAGAAIAAAAAAAAAAAAAAPr/9f/t/+r/7//1/+//6v/m/+b/5v/q/+//7f/k/9v/0P/O/9f/2//f/9v/2//b/9v/3//k/+b/7f/t/+b/7f/v//r/AAAAAPj//v8AAP7/+P/4//j/9f/1/+//7//1//X/7//i/9//5v/z/+//6v/o//P/+P/z/+3/6v/i/+T/7f/v//P/9f/6//r/+v/+/wAAAAAAAAYACAAIAA0ADQANABEAEQAVABwAHgAgACMAIwAVAAoACgAKAAgACAAKAAoABgACAAoAEQANAA0ABgD+//j/+P/6//r/+P/6//r/AAAAAPj/9f/6/wAAAAD+/wAACgATABMABgAAAAAAAAAKAAYAAgACAAAAAAAAAAIABgAAAAAAAAAAAAAA9f/z//P/+P/+//P/6v/o/+j/6v/k/9//3//f/+L/6v/t/+3/7f/z//P/6v/i/9//7f/+//X/7f/o/+3/9f/4//7/+v/6/wAAAAD6//7/AAAAAAAAAAACAAIAAgANAA8ACgAIAAIABgAAAAAAAAAAAAAAAgAGAAIABgACAAAAAAACAAIAAAD+//7/8f/m/+r/7f/t/+3/6v/q//P/9f/+//r/+P/6//7/AAACAAoACgAGAAIABgAIAAoADQANAAoACAAIAAoACAAGAAIAAAD+/wAAAgACAAAACAAIAAIAAAAAAAYABgAAAP7//v8CAA0AEwAGAP7//v8CAAgAEwAKAAIAAgAAAAIACAAIAA0AGAATAAgAAgAIAAYAAgAIAA8ADQAYABoAGAAcACMALgAnACAAIAAcABMACgACAAIAAAAAAP7/8//v//P/9f/z//H/+P/+//z/AAAAAAAAAAAAAPz/+P/x/+j/6P/q//H/9f/4//X/+P/8//j/8//z//H//P8AAAAAAgAPABoAHgAnAB4AHAAVAA0ACAAKABUAEQAPAAoABAACAAQADQAIAAAAAAAAAAAAAAAAAAAAAAD+/wAA+P/z//z/AAD8//H/8//8//z/9f/4/wAAAAAAAAAACAAEAAAAAAACAA0ADQAIAAAAAgAEAAQAAAAAAAAA/P/4//7/AAD8//z//P/1//X/9f/4//z/+P/+/wAAAgD8//P/8f/z//H/8f/v/+3/8//4//7/AAAAAAAAAAAAAAAAAAAAAPj/AAAAAAIABAACAAQAAgAKAA0ADQAIAAQACAAEAAQAAgACAAAA/v8AAAIABAACAAAA/v/8//7//P/4//j/7//m/+b/5v/x//j/8//t/+//8f/8//7//v/4//j/8//z//P/9f/1//H/9f/4//j/+P/+//z//v/+/wAABAAEAAAAAAAAAAAA+P/x//X//v8AAP7//P/1//P/8f/z//j/+P/z/+//9f/8//z//P/+/wAA/v/4//z//v8AAPX/8//+/wIAAAAAAAIACAANAA0ADwAPAA0ABAAEAAYABAAAAAAAAAD+/wAAAAACAAAAAAD6//z/AAAAAAAAAAAAAAAAAAAAAAAAAgAAAPz/+v/+//7/8//v/+//8f/v//H/7//z//z/AAAAAPX//P8AAAAA/v/8//z//v8AAAIAAAAAAAAAAAD+/wAAAAD1//H/7//6//z/+v/6//X/8//1//7/+v/z//H/8f/v/+//7//t/+r/7f/q/+3/7//t/+r/6v/o/+b/8//+/wAAAgAAAAAAAAAGAA0ABAAAAAIAAAACAAoACgAPABEAEwAVABUAFQARAA0ABAACAAYAAgAAAAQABAACAAIABgAEAAYABAAEAAAAAAACAAAAAAAEAAIAAAD8//7/AAD8//P/8f/x//r/AAACAAQAAAAAAPr/+P8AAAgABgAEAAQABgANAAgABAAEAAQAAgAAAAAAAAD+/wAAAAD8/wIADwATABEADwAGAAQACAAGAAYAAAD6//j/+v/8//r/+P/x/+3/8f/8//j/7//x//j/8f/v/+3/8f/4//j/+v/4//j/+v/8/wAAAAAAAAAA/P8AAAIACAAGAAIABgARABUAEQAPAAgADQAGAAQAAAACAAYABAAAAAAAAAACAP7//P/6//z//v8AAAQAAAD8//j/9f/x//X//P/8//H/7f/x//j/+P/4//j/8f/1//z//P/+/wAAAgACAAAAAAACAAYAAgAAAP7/+v/1//X/+v/8//7/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAgAAAPr/+P/6//r//P/4//X/+v/6//z//P/8/wAAAAAAAAQAEwAVABMAEQATABoAHAAeABoAEQATABUAEwARABgAGAARAAgACgAKAAYABgAEAAAAAAAGAAoACAAEAAYABgACAAAAAAD+//z//P/6//X/8//1/wAAAAD6//j/+P8AAPz/+v/z//H/9f/4//j/8//z//P/8f/z//j/+v/8//j/+P8AAAAAAAAAAP7//v/+//z//P/+//7//P/z/+r/5P/q/+//6P/i/93/3f/m/+r/7f/m/+T/5P/x//X/+P/6//X//P/6//7/AAACAAAAAAAAAAIABAACAAIABAAEAAYABAAIAAQABAANABEADwAGAAIABAACAAQABgAAAPr//P8AAAAAAAD8//r//v8AAAAAAAD+//z//v8AAAAAAAD8//X/+v8AAAAA/P/6//j//v8AAAAAAAAAAAIABAAAAAAAAAACAAIAAAAAAAAABAAIAAYAAAD8//X/+P/4//H/7//x/+//8//x//P/+v/6//z//P/6//z//P/4//P/9f/+/wAA/v/8//z/+P/+/wAAAAD+//z//P/8//7//P/+//7/AAAAAAIAAAAAAAAAAAAAAPr/+v8AAAAAAAD+//z//P/4//r//v8AAAAA/P/4//H/9f8AAAAAAAD4/+3/7//1//z/+v/8//z/+v/8/wAAAAAAAAAAAAD+//7/AAAAAAAA/v8AAAAAAAAAAAIAAAAAAAAAAAAEAAIAAAACAAIAAAAAAAAA+v/8//z/AAAAAPz//v8AAPz//P/8//r//P8AAAQAAAD8//j//v/+/wAA/P/6//r//P8EAAIAAAAAAP7//v8AAAAABAAGAAgACAAGAAgAEQAVAA0ACAAKAA8ADQAGAAIA/P/4//r/AAAAAPz//P8AAPz//P8AAAAA/v8AAAAAAAD8//X/+v/6//r//v/+//7/AAAAAP7/+P/6//7/AAAAAPr/+v8AAAIABAACAAAAAAAAAP7/AAAAAAAAAAACAAYABAACAAYACAANAAgAAAAAAAIABgAIAAIAAAD8/wAAAAAAAAIAAgACAP7/AAAIAAgABgAGAA8ADwANAA8ADwATABUAFQAVABoAHAAcABUACgANABMAGAATABMAEwATABoAGAARAA8AEQATAAgABAAEAAYAAAD+//z/+P/x//P/+v/4//P/7f/q/+r/8f/z//H/7f/q/+3/8f/v/+r/7f/o/+j/6P/t/+r/7f/t/+3/8//1//r/+v/8//z/AAAAAAAAAAAGAAYABgAGAAQABgAPAA8ACAAGAAQABAAAAAAAAgAEAAIAAAAAAAIAAAAAAAAA/P/4//z//v8AAPz//P/1//H/9f/1//X/7//v//H/7//1//j//P/8//j/9f/1//P/+v8AAPz/+P/1//j/+P/4//j/+P/4//j/9f/z//j/9f/q/+j/7f/1//r/8f/q/+j/6P/q/+3/7f/o/+j/6P/o/+r/6v/q/+//8//4//j/+P/6//r/+P/z//j//P/8//7//P8AAAAABAAEAAAA/v/6/wAAAgACAAQABgAIAAoADwAKAAQABAAGAAYAAgAAAAAAAAAAAAAAAAD+//7//v8AAP7/AAAAAAAAAAAEABMAEQARABEADQAKAA0AEQARABEAEQANAAgACAAKAAQAAgAAAAQACgANAA8AEQAIAAgABgAAAAAA/v/8//j/8f/x//P/9f/4//r//v/8//j/+P/4//r/+v/4//j//v/8//H/8f/x//j/9f/x/+3/6P/x//j/9f/z//P/8//1//r//v8AAAAAAAAAAAQABAAAAAAAAgACAAAAAAACAAIAAgAAAAAAAAAAAAIAAAAAAAAAAgAAAPz//P/+//z/+P/6//r//P/8//r/+P/1//j/+P/6/wAABAAIAAoACgAIAAgABgAEAAQABgAIAAoACAANAAoACgAKAAoADQARABUAGAAVABMAEwARAA0ACgAKAAIAAAAAAAQABgACAPr/9f/1//j/+P/4//z/9f/1/wAABAAAAAAA/v8AAAYABAAEAAAAAgAEAAgABgAGAAoACAAIAAoADQARABUAEwAKAAoADwARABEACgAKAAoABAAAAAAAAAD+/wAAAAD+//r/AAD8//7/AAD6//r/+v/6//7//v/+/wAAAAAAAAAAAAAAAAAA/v8AAP7//v8AAP7/AAAAAAAAAAAAAAAAAAAAAP7/+v/4/wAAAgAAAPj/9f/4//j/+v/6//j/+P/8//j/9f/1//P/7f/t/+//7f/q/+r/7f/q/+r/6v/q/+r/6v/t/+3/7f/1//r/+v/4//X/9f/4//7/AgAAAAAA+v/+/wAAAAAAAAAAAAAAAAAABAAGAAQABgAEAAYABAAEAAgABgAAAAIABAAIAAgACAAGAAQABAAEAAAA/P/8/0xJU1QWAAAASU5GT0lFTkcKAAAAemhhbmcgbGVpAERJU1AsEAAACAAAACgAAAAgAAAAIAAAAAEAIAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8AwMjOAP///wD///8A////ANne4gC0vsUAtL7FANne4gDZ3uIA2d7iALS+xQDZ3uIA2d7iANne4gD///8A////AOzu8ADQ1toAtL7FANne4gD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wA3UmUAm6iyAP///wD///8AN1JlAGl9iwA3UmUAm6iyAJuosgCbqLIAdYiVAJuosgA3UmUAzdPYAM3T2AD///8A////AIKSngCCkp4Am6iyAP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AL3GzAD///8AzdPYAP///wDN09gAN1JlADdSZQCbqLIA3+PmAJuosgBccoEAm6iyADdSZQD///8Am6iyANne4gBpfYsAgpKeAJuosgCbqLIA////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wDN09gA7O7wAM3T2ACbqLIA////ADdSZQBpfYsAN1JlAGl9iwCbqLIAZXqJADdSZQC9xswAN1JlAP///wDN09gA////AJuosgCCkp4AOlRnAJuosgD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AJuosgA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAm6iyAP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8Am6iyADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQCbqLIA////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wCbqLIAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlAJuosgD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AJuosgA3UmUAN1JlAGl9iwD///8Am6iyADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAm6iyAP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8Am6iyADdSZQA3UmUAm6iyAP///wDN09gAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQC3wMcA////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD7/PwAN1JlADdSZQBMZHUA////AP///wBpfYsAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAaX2LAP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wBpfYsAN1JlADdSZQDAyM4A////AP///wDT2d0ASWJzADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQDN09gA////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AM3T2AA3UmUAN1JlADdSZQDN09gA////AP///wDN09gAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlADdSZQA3UmUAm6iyAP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AO/x8gCbqLIAm6iyAENcbgA3UmUAN1JlAGl9iwD///8A////AP///wA3UmUAN1JlADdSZQA3UmUAXHKBADdSZQA3UmUAN1JlADdSZQDZ3uIA////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8ApLC5ADdSZQA3UmUAN1JlADdSZQA3UmUAN1JlAM3T2AD///8A////ADdSZQA3UmUAN1JlAGl9iwD///8Am6iyADdSZQA3UmUAN1JlAP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8AaX2LAFBneABGX3EAN1JlADdSZQA3UmUAzdPYAP///wD///8Am6iyADdSZQA3UmUAoa22AP///wD///8AN1JlADdSZQA3UmUA////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wDN09gAm6iyAP///wD///8A////AP///wD///8Am6iyAJuosgD///8A////AP///wBpfYsAN1JlAM3T2AD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A');
+var _s=new Audio('data:audio/wav;base64,UklGRiQtAABXQVZFZm10IBAAAAABAAEAIlYAAESsAAACABAAZGF0YQAtAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAA////////////////AAABAAEAAgABAAIAAgABAAAA///+//7//v//////AAABAP////8BAAAA//8AAAMAAAAAAAEA///////////+////AQABAAAAAAAAAAIAAwD///7//f/9/wAA//8AAAEAAwAFAP///v8BAAIA//8AAAMAAQD8//n/+v/6//7//v///wQABAADAAIABAAFAAQAAgD+//7//v/7//f//f8BAAMAAAD//wMAAAD+////AgACAAIAAAD+//3/+f/+//v//f8EAAYABwABAAUAAQD9//3//P8BAP3//P8AAAEA/P/7//z/+/8BAAAAAQACAAcACAAAAAMAAgD+//v//P/9////BQAEAAEABgAFAPj/9P/5//z/9//2/wMAAwD8//r/AgAGAAIABQADAAYABAABAAUAAwAIAA0ABwABAAEA+f/t/+//8//7/wEA///7//v////5/wAAAgD5/wAA/P8BAAEAAAAMABEAEAAHAAsACQD0//H/AAD///j//f/+//3/+//7//v/BAAMAP///f////r////8//b/CAAWAAQA//8LAA4A+//3////9//z/+//9v/8/wIABAD3/wIADAAGAP7/BwAMAP//AAD7//b/+v/+//7/AwALAAcA/P/8/wQA/f/6/wIABgAFAP7//P/8//z/BgAHAP//AwD6/+//6//r//H/8f8AAAUABgATAAwACgAOAPz/8////wAABQAOAAwAAgD//wkA+f/y/wAAAAAFAAQA/f/7//f/7v/t//X/AgAFAAgADwD//wQAEAANABUAFAAKAPv/9f/5//j/+f8CAAIABgACAO3/+P/+//T/+v8GAAwABgAJAP//6//2/wQAAAAQABkAEwAeABYADQAIAPv/8P/r//n/+P/3/wcABQD7//v/9v/3/wEACAAFAPr/AQAEAPb/9P8EAA0ABwAIAAkAAAD0//n/8//2/wwAAgD7/wgAFgAFAP//EgARABIABgD6//H/9P/5/+D/6P8CAAMA7f/+/yEADwD+/wcAAwD+/wMA9f/+/xMACwAFAAIA///+/wgAAwD1/wcABQDf/9n/9f/x//X/BwAZABsADAAVAAsACwAFAPz/EgACAAQADgADAAMACgAWAA8ABgDp/9j/5v/j/+T/9f8IAAIABQAHAP//CgAEAAkACgAHABcAEAAAAP7/GQAbAAEAAwAKAP//3v/h//3/+P/1/wgADQAFAAMA/f/0//D/AAD7//j/DgARABIACQAUABMABQADAPT/+f8DAAEA8v/8//7/9//7/+j//v/5//j/DgAZAB4AAgAMAAQA8//4//H/+f/+/woACgAFAPn/BAAMAP3/BgAQABsAAADn//b/+f/s/+3/+P/5/wcABAD8/wIAHQAeAAsAIQAXAAUA9f/j/+n/+/8FAPr///8MAAsA6f/v/xEAEAANAPv/BwANAPP/6f/l//3/FAAPAAwACwAHAAwA/f/w/+7/9P/+/+P/8P8GAO7/+f8XABMADAAUAA0ABQAIABQABgAEABcABgD8/+H/1//o/+X/5f/n//j/EQAfABoAFQANAAUAAgD6//n/9P8JAAsA+/8PABQAAwD9/woA///z//z/AQD3/9v/2f/g/+T/+f8ZAC8AIQAdACMAEgAKAPT/3v/t//n/9f/7/wwADAAKABQAEAAGAA8ADADd/9X/5//j/+T/7v8RABsABQACABsA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7v/3/9v//v8NAP//1f+y//r/4P+t/9T/5//w/wsA/v8CAC0AFAD+/ywAMgAqACgAEQAIAO7/9P/4/wIAEgAEAAUA9f/9/wAA/v8QABsAGAALAA8AFQANABEANQBDAEgARwA6AEYAVAA/AD4AWQBlAG4ASgA1AFcASgAGAP//CwALAPj/t//I//3/7//B/+T//f/s/wEAFQA2AFMAggBOADUARQAVACMAIQAZABkAMgArAA8AFAALABkABQAMABgA6v/g/+j//f8SABoAHwAXAD0ATQAoACgASwA7AA4AJADy/8r/0/+g/5f/ff9t/47/rP+2/7X/y//y//v/8v8nAE4ARQAzABgACwALABIADgD5/wQA/f/s//n/8f/v/+b/7v/d/8f/xP+o/8j/4P/k/+j/4//R/73/x//M/+L/8//x//H/7P/u/+X/yP/c/+//1P/a/+j/7v/1//7/6P/h//b/+v8FAP//8v/7/yMAKgArAEsARAAzABkA7v/5/xMADwAbACsAFAD7/wMA4v/p//v/xf+o/7b/2f/N/9P/4P/v//n/wv/K//T/5v++/7T/qf++/7T/gv+w/7f/tv/D/8f/AgD9/97/4v/j////7f/L/+r/7//4/+z/tf/J/+T/1P/V/8n/6f/+/8L/0//8/xQAGgAGACQALgAuADoAOQBYAF4AOwA0ABkACAD///b/DgAEAP3/+f/b/+H/AQD///v//P/1/wcAIAAqABwAMAA3AB4AGwAtAC0AEwApABkABgAeABcACQARABUABADt/+n/AgDi/+P/7f/c//f/6//t/+j/6//2/97/4P/3/wUA9/8BAAMAAQAXAAwACgAeAB0ADQAJABAAIQAhABwAKgAtADMAKwAWABgAEQABAPP/6f/4//7/+f8GAAsADAAJAP3//f8JAA4A9f8GABcA9//w//P/BQD+/+r/3v/f/wsAAgD5/w4ADAD//+H/0f/G/8f/0//H/8X/w/+s/5T/iv+i/8b/0v/A/7H/xf/R/83/2//v//T/5//U/93/4P/M/8b/sf+q/8f/4P/Z/8v/1//J/8T/3P/P/9n/+f/1//b/8P/r/+b/3//u/+f/2f/i/97/3f/b/8H/4//w/9j/2f/Q/+j/7P/s/+r/7//6/+7/AgADACcAMwAYACAAJAAxACUAIAANAAAA/f/+////7v8CAPT/5f/r/+r/AgAAAPz/EwANAAIA/v8EABkABAD0//f/BAAAAPL//f8NADoAHAAKACIAHgAzABQAIgBLAEkAQQAeACIAOAA7AD0AOgBJAG8AXQBWAG4AYQBsAFsAUwBlAFYATgAxACcANgAZAAoADwD//wgABgAEAA0ADwAhAA0AAQAMAAwAAwDz/wAACgAIAPT/+v8dABMACwALAAkADQAJAA4ADQADAP//AQABAPj/+/////3/BAAFAAIACwALAAYACwADAPv//f/8/wMAAAD4/wAA///7//v/AQAHAPz/+v8DAAUABgALAAUAAQAIAP//AgD2//H/AQDw//X/+//7/wEA+/8FAAoABwD//wEACQAIAAQA//8BAAEA///8/wYAAwD5/wQAAAACAP7/+/8IAPj/9v////b/AAAFAAIAAwD6//v/BAAHAAMA/v/8/wIABAD//wkAAgD5//7/9//7/wIA//8EAAUABgAGAPn//P/+//7/BgAAAP7//P/6//3/+//7//3/AgAAAAAABgAAAAEAAQD5/wUACAD8//3//P/2//v////2//T/+//+//r//v8BAAAABQAAAAUAAgD7/wAAAAADAAEABAD8//n/AAD9//7//f8FAAYA+//6//7/AAAAAAIAAQD3//j//P/4//j/9f/6//z/+v/7//r/AAD8//7////6/////f/9//v/9//8//j/9v/+//f/+v////z/+//3/wAA///8//j/9v/6//b/+P/5//j/+P/9/wAA///7//7/AwD7//3/+//9//7//v/9//r/AQD+//r/+v/3//j/+v/4//r///8EAAEA+f////j//v/+//X//f/z//f/9//x//T/+P/4//T/+P/z//X/+//8//n/AAABAPX/+P/5//b/9v/9//v/+/////v//P///wQA/v8GAAMAAQAHAPz/BAAAAAEABAD8//n/+f/9//3//f8AAAEAAAADAP3//v8BAP7////9/////f8AAP//+v/+//7//P8=');
+function sfx(cap){try{var a=cap?_s:_c;a.currentTime=0;a.play()}catch(e){}}
+draw();showToast('红方先行');
+</script>
+</body>
+</html>
